@@ -1,0 +1,93 @@
+id: com.unifi.network
+name: UniFi Network
+version: 0.1.0
+min_core_version: 0.10.1
+category: network-device
+
+driver:
+  entrypoint: driver:UnifiNetworkDriver
+
+requires:
+  python: ">=3.12,<3.13"
+  deps:
+    - "requests>=2.31.0"
+
+schema:
+  connection:
+    type: object
+    required: [hostname, api_key]
+    properties:
+      hostname: { type: string }               # e.g. 10.240.0.1 or unifi.example.com
+      api_key: { type: string, secret: true }  # UniFi "Integrations" API Key (PDF: “Authentication and Request Format”)
+      verify_ssl: { type: boolean, default: true }
+      base_path: { type: string, default: "/proxy/network/integration/v1" }
+      # Header guessing controls (auth header not named in docs; keep minimal + safe defaults)
+      auth_header_name: { type: string, default: "Authorization" }   # tries "Authorization: Bearer <key>" first
+      auth_scheme: { type: string, default: "Bearer" }               # set to "" to send raw key; or set to "X-API-Key" via name
+
+defaults:
+  heartbeat_interval_s: 60
+  dry_run_refresh_sla_s: 8
+
+test:
+  method: driver
+
+capabilities:
+  - id: inventory.list
+    verbs: [list]
+    targets: [site, device, client, voucher]
+    dry_run: optional
+    idempotency:
+      key_fields: ["verb", "target_type", "options.active_only", "params.filter"]
+
+  - id: unifi.application.info
+    verbs: [get]
+    targets: [application]
+    dry_run: not_supported
+    idempotency:
+      key_fields: ["verb"]
+
+  - id: unifi.device.lifecycle
+    verbs: [restart]
+    targets: [device]
+    dry_run: required
+    idempotency:
+      key_fields: ["verb", "target_id"]
+
+  - id: unifi.port.lifecycle
+    verbs: [power-cycle]
+    targets: [port]
+    dry_run: required
+    idempotency:
+      key_fields: ["verb", "target_id", "params.port_idx"]
+
+  - id: unifi.client.access
+    verbs: [authorize-guest, unauthorize-guest]
+    targets: [client]
+    dry_run: required
+    invertible:
+      authorize-guest: { inverse: "unauthorize-guest" }
+      unauthorize-guest: { inverse: "authorize-guest" }
+    idempotency:
+      key_fields:
+        - "verb"
+        - "target_id"
+        - "params.time_limit_minutes"
+        - "params.data_usage_limit_mbytes"
+        - "params.rx_rate_limit_kbps"
+        - "params.tx_rate_limit_kbps"
+
+  - id: unifi.voucher.lifecycle
+    verbs: [generate, delete]
+    targets: [voucher]
+    dry_run: required
+    idempotency:
+      key_fields:
+        - "verb"
+        - "params.count"
+        - "params.name"
+        - "params.authorized_guest_limit"
+        - "params.time_limit_minutes"
+        - "params.data_usage_limit_mbytes"
+        - "params.rx_rate_limit_kbps"
+        - "params.tx_rate_limit_kbps"
