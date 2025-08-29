@@ -272,7 +272,7 @@ class UnifiNetworkDriver:
         """
         POST /v1/sites/{siteId}/devices/{deviceId}/interfaces/ports/{portIdx}/actions { "action": "POWER_CYCLE" }
         """
-        if verb != "power-cycle":
+        if verb != "power_cycle":
             raise ValueError("unsupported verb for unifi.port.power")
         # Handle both dict and Target object from loader
         if hasattr(target, 'external_id'):  # Target object
@@ -286,7 +286,7 @@ class UnifiNetworkDriver:
         if not site_id or not device_id or port_idx is None:
             raise ValueError("site_id, device_id and port_idx required")
         plan = {
-            "action": "port.power-cycle",
+            "action": "port.power_cycle",
             "target_id": f"{device_id}:{port_idx}",
             "expected_effect": "Port will be power-cycled.",
         }

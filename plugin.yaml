@@ -55,7 +55,7 @@ capabilities:
       key_fields: ["verb", "target_id"]
 
   - id: unifi.port.power
-    verbs: [power-cycle]
+    verbs: [power_cycle]
     targets: [port]
     dry_run: required
     idempotency:
