@@ -5,3 +5,4 @@ __pycache__/
 .claude
 secrets.yaml
 config.yaml
+test*

@@ -153,7 +153,7 @@ class UnifiNetworkDriver:
 
     # ---------- required by framework ----------
 
-    def test_connection(self) -> dict:
+    async def test_connection(self) -> dict:
         """
         Hit GET /v1/info → {"applicationVersion": "..."} (PDF: About Application / Get Application Info).
         """
@@ -169,7 +169,7 @@ class UnifiNetworkDriver:
 
     # ---------- inventory.list ----------
 
-    def inventory_list(self, target_type: str, active_only: bool = True, options: dict | None = None) -> list:
+    async def inventory_list(self, target_type: str, active_only: bool = True, options: dict | None = None) -> list:
         """
         target_type normalized to snake_case by the core (per GPT.md).
         Supported: "site", "device", "client", "voucher".
@@ -182,59 +182,96 @@ class UnifiNetworkDriver:
             params = {}
             if filter_expr:
                 params["filter"] = filter_expr
-            return self._paginate("/sites", params=params, page_size=100, limit_upper=1000)
+            sites_raw = self._paginate("/sites", params=params, page_size=100, limit_upper=1000)
+            # Normalize site shape for walNUT inventory expectations
+            sites = []
+            for s in sites_raw:
+                sites.append({
+                    "type": "site",
+                    "external_id": s.get("id"),
+                    "name": s.get("name") or s.get("internalReference") or s.get("id"),
+                    "attrs": {
+                        "internal_reference": s.get("internalReference"),
+                    }
+                })
+            return sites
 
         if target_type == "device":
+            # If no site_id provided, aggregate devices across all sites
+            site_ids: list[str]
             if not site_id:
-                raise ValueError("options.site_id is required for device listing")
-            params = {}
-            return self._paginate(f"/sites/{site_id}/devices", params=params, page_size=200, limit_upper=200)
+                sites = self._paginate("/sites", params={}, page_size=100, limit_upper=1000)
+                site_ids = [s.get("id") for s in sites if s.get("id")]
+            else:
+                site_ids = [site_id]
+            devices: list = []
+            for sid in site_ids:
+                devs_raw = self._paginate(f"/sites/{sid}/devices", params={}, page_size=200, limit_upper=200)
+                for d in devs_raw:
+                    devices.append({
+                        "type": "device",
+                        "external_id": d.get("id"),
+                        "name": d.get("displayName") or d.get("name") or d.get("id"),
+                        "attrs": {
+                            "site_id": sid,
+                            "model": d.get("model"),
+                            "state": d.get("state"),
+                        }
+                    })
+            return devices
 
         if target_type == "port":
+            # If no site_id provided, aggregate ports across all sites
+            site_ids: list[str]
             if not site_id:
-                raise ValueError("options.site_id is required for port listing")
-            # Port listing requires getting device details and extracting port info
-            devices = self._paginate(f"/sites/{site_id}/devices", params={}, page_size=200, limit_upper=200)
-            ports = []
-            for device in devices:
-                device_detail = self._request("GET", f"/sites/{site_id}/devices/{device.get('id')}")
-                interfaces = device_detail.get("interfaces", {})
-                device_ports = interfaces.get("ports", [])
-                for port in device_ports:
-                    port_obj = {
-                        "type": "port",
-                        "external_id": f"{device.get('id')}:{port.get('idx')}",
-                        "name": f"{device.get('displayName', device.get('name', 'Unknown'))}-Port-{port.get('idx')}",
-                        "attrs": {
-                            "device_id": device.get("id"),
-                            "device_name": device.get("displayName", device.get("name")),
-                            "port_idx": port.get("idx"),
-                            "state": port.get("state"),
-                            "connector": port.get("connector"),
-                            "speed_mbps": port.get("speedMbps"),
-                            "max_speed_mbps": port.get("maxSpeedMbps"),
-                            "poe_capable": "poe" in port,
-                            "poe_enabled": port.get("poe", {}).get("enabled", False),
-                            "poe_standard": port.get("poe", {}).get("standard"),
-                            "poe_type": port.get("poe", {}).get("type"),
-                            "poe_state": port.get("poe", {}).get("state")
+                sites = self._paginate("/sites", params={}, page_size=100, limit_upper=1000)
+                site_ids = [s.get("id") for s in sites if s.get("id")]
+            else:
+                site_ids = [site_id]
+            ports: list = []
+            for sid in site_ids:
+                # Port listing requires getting device details and extracting port info
+                devices = self._paginate(f"/sites/{sid}/devices", params={}, page_size=200, limit_upper=200)
+                for device in devices:
+                    device_detail = self._request("GET", f"/sites/{sid}/devices/{device.get('id')}")
+                    interfaces = device_detail.get("interfaces", {})
+                    device_ports = interfaces.get("ports", [])
+                    for port in device_ports:
+                        port_obj = {
+                            "type": "port",
+                            "external_id": f"{device.get('id')}:{port.get('idx')}",
+                            "name": f"{device.get('displayName', device.get('name', 'Unknown'))}-Port-{port.get('idx')}",
+                            "attrs": {
+                                "site_id": sid,
+                                "device_id": device.get("id"),
+                                "device_name": device.get("displayName", device.get("name")),
+                                "port_idx": port.get("idx"),
+                                "state": port.get("state"),
+                                "connector": port.get("connector"),
+                                "speed_mbps": port.get("speedMbps"),
+                                "max_speed_mbps": port.get("maxSpeedMbps"),
+                                "poe_capable": "poe" in port,
+                                "poe_enabled": port.get("poe", {}).get("enabled", False),
+                                "poe_standard": port.get("poe", {}).get("standard"),
+                                "poe_type": port.get("poe", {}).get("type"),
+                                "poe_state": port.get("poe", {}).get("state")
+                            }
                         }
-                    }
-                    if active_only:
-                        # Consider port active if link is up OR PoE is delivering power
-                        link_up = port.get("state", "").upper() == "UP"
-                        poe_delivering = port.get("poe", {}).get("state", "").upper() == "UP"
-                        if link_up or poe_delivering:
+                        if active_only:
+                            # Consider port active if link is up OR PoE is delivering power
+                            link_up = (port.get("state", "") or "").upper() == "UP"
+                            poe_delivering = (port.get("poe", {}).get("state", "") or "").upper() == "UP"
+                            if link_up or poe_delivering:
+                                ports.append(port_obj)
+                        else:
                             ports.append(port_obj)
-                    else:
-                        ports.append(port_obj)
             return ports
 
         raise ValueError(f"unsupported target_type: {target_type}")
 
     # ---------- unifi.application.info ----------
 
-    def unifi_application_info(self, verb: str, target: dict, dry_run: bool = False, **params) -> dict:
+    async def unifi_application_info(self, verb: str, target: dict, dry_run: bool = False, **params) -> dict:
         if verb != "get":
             raise ValueError("unsupported verb for unifi.application.info")
         info = self._request("GET", "/info", expected=200)
@@ -242,7 +279,7 @@ class UnifiNetworkDriver:
 
     # ---------- unifi.device.power ----------
 
-    def unifi_device_power(self, verb: str, target: dict, dry_run: bool = False, **params) -> dict:
+    async def unifi_device_power(self, verb: str, target: dict, dry_run: bool = False, **params) -> dict:
         """
         POST /v1/sites/{siteId}/devices/{deviceId}/actions  { "action": "RESTART" }
         """
@@ -269,7 +306,7 @@ class UnifiNetworkDriver:
 
     # ---------- unifi.port.power ----------
 
-    def unifi_port_power(self, verb: str, target: dict, dry_run: bool = False, **params) -> dict:
+    async def unifi_port_power(self, verb: str, target: dict, dry_run: bool = False, **params) -> dict:
         """
         POST /v1/sites/{siteId}/devices/{deviceId}/interfaces/ports/{portIdx}/actions { "action": "POWER_CYCLE" }
         """
@@ -301,7 +338,7 @@ class UnifiNetworkDriver:
 
     # ---------- unifi.power.discover ----------
 
-    def unifi_power_discover(self, verb: str, target: dict, dry_run: bool = False, **params) -> dict:
+    async def unifi_power_discover(self, verb: str, target: dict, dry_run: bool = False, **params) -> dict:
         """
         Map power-related infrastructure for walNUT power management.
         Returns detailed power mapping of sites, devices, and PoE-capable ports.
@@ -319,7 +356,7 @@ class UnifiNetworkDriver:
         
         if target_type == "site":
             # Map all sites with basic info
-            sites = self.inventory_list("site", active_only=False, options=None)
+            sites = await self.inventory_list("site", active_only=False, options=None)
             power_map = {
                 "action": "power.map.sites",
                 "sites": [],
@@ -342,7 +379,7 @@ class UnifiNetworkDriver:
             if not site_id:
                 raise ValueError("site_id required for device power mapping")
             
-            devices = self.inventory_list("device", active_only=False, options={"site_id": site_id})
+            devices = await self.inventory_list("device", active_only=False, options={"site_id": site_id})
             power_map = {
                 "action": "power.map.devices", 
                 "site_id": site_id,
@@ -380,7 +417,7 @@ class UnifiNetworkDriver:
             if not site_id:
                 raise ValueError("site_id required for port power mapping")
                 
-            ports = self.inventory_list("port", active_only=False, options={"site_id": site_id})
+            ports = await self.inventory_list("port", active_only=False, options={"site_id": site_id})
             poe_ports = [p for p in ports if p.get("attrs", {}).get("poe_capable", False)]
             
             power_map = {
