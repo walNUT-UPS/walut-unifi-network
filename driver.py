@@ -189,21 +189,45 @@ class UnifiNetworkDriver:
             params = {}
             return self._paginate(f"/sites/{site_id}/devices", params=params, page_size=200, limit_upper=200)
 
-        if target_type == "client":
+        if target_type == "port":
             if not site_id:
-                raise ValueError("options.site_id is required for client listing")
-            params = {}
-            if filter_expr:
-                params["filter"] = filter_expr  # supports eq/ne/gt/... per Filtering section
-            return self._paginate(f"/sites/{site_id}/clients", params=params, page_size=200, limit_upper=200)
-
-        if target_type == "voucher":
-            if not site_id:
-                raise ValueError("options.site_id is required for voucher listing")
-            params = {"limit": 1000}
-            if filter_expr:
-                params["filter"] = filter_expr  # supports eq, like, in, notIn etc.
-            return self._paginate(f"/sites/{site_id}/hotspot/vouchers", params=params, page_size=1000, limit_upper=1000)
+                raise ValueError("options.site_id is required for port listing")
+            # Port listing requires getting device details and extracting port info
+            devices = self._paginate(f"/sites/{site_id}/devices", params={}, page_size=200, limit_upper=200)
+            ports = []
+            for device in devices:
+                device_detail = self._request("GET", f"/sites/{site_id}/devices/{device.get('id')}")
+                interfaces = device_detail.get("interfaces", {})
+                device_ports = interfaces.get("ports", [])
+                for port in device_ports:
+                    port_obj = {
+                        "type": "port",
+                        "external_id": f"{device.get('id')}:{port.get('idx')}",
+                        "name": f"{device.get('displayName', device.get('name', 'Unknown'))}-Port-{port.get('idx')}",
+                        "attrs": {
+                            "device_id": device.get("id"),
+                            "device_name": device.get("displayName", device.get("name")),
+                            "port_idx": port.get("idx"),
+                            "state": port.get("state"),
+                            "connector": port.get("connector"),
+                            "speed_mbps": port.get("speedMbps"),
+                            "max_speed_mbps": port.get("maxSpeedMbps"),
+                            "poe_capable": "poe" in port,
+                            "poe_enabled": port.get("poe", {}).get("enabled", False),
+                            "poe_standard": port.get("poe", {}).get("standard"),
+                            "poe_type": port.get("poe", {}).get("type"),
+                            "poe_state": port.get("poe", {}).get("state")
+                        }
+                    }
+                    if active_only:
+                        # Consider port active if link is up OR PoE is delivering power
+                        link_up = port.get("state", "").upper() == "UP"
+                        poe_delivering = port.get("poe", {}).get("state", "").upper() == "UP"
+                        if link_up or poe_delivering:
+                            ports.append(port_obj)
+                    else:
+                        ports.append(port_obj)
+            return ports
 
         raise ValueError(f"unsupported target_type: {target_type}")
 
@@ -215,14 +239,19 @@ class UnifiNetworkDriver:
         info = self._request("GET", "/info", expected=200)
         return {"status": "ok", "info": info}
 
-    # ---------- unifi.device.lifecycle ----------
+    # ---------- unifi.device.power ----------
 
-    def unifi_device_lifecycle(self, verb: str, target: dict, dry_run: bool = False, **params) -> dict:
+    def unifi_device_power(self, verb: str, target: dict, dry_run: bool = False, **params) -> dict:
         """
         POST /v1/sites/{siteId}/devices/{deviceId}/actions  { "action": "RESTART" }
         """
-        site_id = (target.get("site_id") or params.get("site_id"))
-        device_id = (target.get("external_id") or target.get("id") or params.get("device_id"))
+        # Handle both dict and Target object from loader
+        if hasattr(target, 'external_id'):  # Target object
+            site_id = params.get("site_id")
+            device_id = target.external_id
+        else:  # dict
+            site_id = (target.get("site_id") if target else None) or params.get("site_id")
+            device_id = (target.get("external_id") or target.get("id") if target else None) or params.get("device_id")
         if not site_id or not device_id:
             raise ValueError("site_id and device_id required")
         plan = {
@@ -237,17 +266,23 @@ class UnifiNetworkDriver:
         self._request("POST", f"/sites/{site_id}/devices/{device_id}/actions", json=payload, expected=200)
         return {"status": "ok", "result": {"device_id": device_id, "action": "RESTART"}}
 
-    # ---------- unifi.port.lifecycle ----------
+    # ---------- unifi.port.power ----------
 
-    def unifi_port_lifecycle(self, verb: str, target: dict, dry_run: bool = False, **params) -> dict:
+    def unifi_port_power(self, verb: str, target: dict, dry_run: bool = False, **params) -> dict:
         """
         POST /v1/sites/{siteId}/devices/{deviceId}/interfaces/ports/{portIdx}/actions { "action": "POWER_CYCLE" }
         """
         if verb != "power-cycle":
-            raise ValueError("unsupported verb for unifi.port.lifecycle")
-        site_id = (target.get("site_id") or params.get("site_id"))
-        device_id = (target.get("device_id") or params.get("device_id"))
-        port_idx = (target.get("port_idx") or params.get("port_idx"))
+            raise ValueError("unsupported verb for unifi.port.power")
+        # Handle both dict and Target object from loader
+        if hasattr(target, 'external_id'):  # Target object
+            site_id = params.get("site_id")
+            device_id = params.get("device_id")
+            port_idx = params.get("port_idx")
+        else:  # dict
+            site_id = (target.get("site_id") if target else None) or params.get("site_id")
+            device_id = (target.get("device_id") if target else None) or params.get("device_id")
+            port_idx = (target.get("port_idx") if target else None) or params.get("port_idx")
         if not site_id or not device_id or port_idx is None:
             raise ValueError("site_id, device_id and port_idx required")
         plan = {
@@ -263,113 +298,121 @@ class UnifiNetworkDriver:
                       json=payload, expected=200)
         return {"status": "ok", "result": {"device_id": device_id, "port_idx": port_idx, "action": "POWER_CYCLE"}}
 
-    # ---------- unifi.client.access ----------
+    # ---------- unifi.power.discover ----------
 
-    def unifi_client_access(self, verb: str, target: dict, dry_run: bool = False, **params) -> dict:
+    def unifi_power_discover(self, verb: str, target: dict, dry_run: bool = False, **params) -> dict:
         """
-        POST /v1/sites/{siteId}/clients/{clientId}/actions
-          - AUTHORIZE_GUEST_ACCESS (+ optional time/data/rate limits)
-          - UNAUTHORIZE_GUEST_ACCESS
+        Map power-related infrastructure for walNUT power management.
+        Returns detailed power mapping of sites, devices, and PoE-capable ports.
         """
-        site_id = (target.get("site_id") or params.get("site_id"))
-        client_id = (target.get("external_id") or target.get("id") or params.get("client_id"))
-        if not site_id or not client_id:
-            raise ValueError("site_id and client_id required")
-
-        action_map = {
-            "authorize-guest": "AUTHORIZE_GUEST_ACCESS",
-            "unauthorize-guest": "UNAUTHORIZE_GUEST_ACCESS",
-        }
-        if verb not in action_map:
-            raise ValueError("unsupported verb for unifi.client.access")
-
-        # Map params to API field names from PDF (Generate/Authorize limits share naming style)
-        payload = {"action": action_map[verb]}
-        for k_src, k_dst in [
-            ("time_limit_minutes", "timeLimitMinutes"),
-            ("data_usage_limit_mbytes", "dataUsageLimitMBytes"),
-            ("rx_rate_limit_kbps", "rxRateLimitKbps"),
-            ("tx_rate_limit_kbps", "txRateLimitKbps"),
-        ]:
-            if params.get(k_src) is not None:
-                payload[k_dst] = params[k_src]
-
-        plan = {
-            "action": f"client.{verb}",
-            "target_id": client_id,
-            "params": {k: v for k, v in payload.items() if k != "action"},
-            "expected_effect": "Client guest access state will change accordingly.",
-            "reversible_with": "unauthorize-guest" if verb == "authorize-guest" else "authorize-guest",
-        }
-        if dry_run:
-            return {"status": "plan", "plan": plan}
-
-        res = self._request("POST", f"/sites/{site_id}/clients/{client_id}/actions", json=payload, expected=200)
-        return {"status": "ok", "result": res or {"client_id": client_id, "action": payload["action"]}}
-
-    # ---------- unifi.voucher.lifecycle ----------
-
-    def unifi_voucher_lifecycle(self, verb: str, target: dict, dry_run: bool = False, **params) -> dict:
-        """
-        - generate: POST /v1/sites/{siteId}/hotspot/vouchers
-        - delete:   DELETE /v1/sites/{siteId}/hotspot/vouchers?filter=...
-                    or DELETE /v1/sites/{siteId}/hotspot/vouchers/{voucherId}
-        """
-        site_id = (target.get("site_id") or params.get("site_id"))
-        if not site_id:
-            raise ValueError("site_id required")
-
-        if verb == "generate":
-            payload = {
-                "count": int(params.get("count", 1)),
-                "name": params["name"],
-                "authorizedGuestLimit": int(params.get("authorized_guest_limit", 1)),
-                "timeLimitMinutes": int(params["time_limit_minutes"]),
+        if verb != "map":
+            raise ValueError("unsupported verb for unifi.power.discover")
+        
+        # Handle both dict and Target object from loader
+        if hasattr(target, 'type'):  # Target object
+            target_type = target.type
+            site_id = params.get("site_id")
+        else:  # dict
+            target_type = target.get("type", "site") if target else "site"
+            site_id = (target.get("site_id") if target else None) or params.get("site_id")
+        
+        if target_type == "site":
+            # Map all sites with basic info
+            sites = self.inventory_list("site", active_only=False, options=None)
+            power_map = {
+                "action": "power.map.sites",
+                "sites": [],
+                "summary": {"total_sites": len(sites)}
             }
-            # Optional knobs
-            if params.get("data_usage_limit_mbytes") is not None:
-                payload["dataUsageLimitMBytes"] = int(params["data_usage_limit_mbytes"])
-            if params.get("rx_rate_limit_kbps") is not None:
-                payload["rxRateLimitKbps"] = int(params["rx_rate_limit_kbps"])
-            if params.get("tx_rate_limit_kbps") is not None:
-                payload["txRateLimitKbps"] = int(params["tx_rate_limit_kbps"])
-
-            plan = {
-                "action": "voucher.generate",
-                "target_id": f"site:{site_id}",
-                "params": {k: v for k, v in payload.items()},
-                "expected_effect": f"{payload['count']} voucher(s) will be created.",
-            }
-            if dry_run:
-                return {"status": "plan", "plan": plan}
-
-            res = self._request("POST", f"/sites/{site_id}/hotspot/vouchers", json=payload, expected=201)
-            return {"status": "ok", "result": res}
-
-        if verb == "delete":
-            voucher_id = target.get("external_id") or target.get("id") or params.get("voucher_id")
-            filter_expr = params.get("filter")
-            if voucher_id:
-                plan = {
-                    "action": "voucher.delete",
-                    "target_id": voucher_id,
-                    "expected_effect": "Voucher will be deleted.",
+            for site in sites:
+                site_info = {
+                    "site_id": site.get("external_id") or site.get("id"),
+                    "name": site.get("name"),
+                    "devices_count": 0,
+                    "poe_ports_count": 0
                 }
-                if dry_run:
-                    return {"status": "plan", "plan": plan}
-                res = self._request("DELETE", f"/sites/{site_id}/hotspot/vouchers/{voucher_id}", expected=200)
-                return {"status": "ok", "result": res}
-            if not filter_expr:
-                raise ValueError("either target.id or params.filter is required for delete")
-            plan = {
-                "action": "voucher.delete",
-                "target_id": f"site:{site_id}",
-                "params": {"filter": filter_expr},
-                "expected_effect": "Matching vouchers will be deleted.",
-            }
+                power_map["sites"].append(site_info)
+            
             if dry_run:
-                return {"status": "plan", "plan": plan}
-            res = self._request("DELETE", f"/sites/{site_id}/hotspot/vouchers", params={"filter": filter_expr}, expected=200)
-            return {"status": "ok", "result": res}
-
-        raise ValueError("unsupported verb for unifi.voucher.lifecycle")
+                return {"status": "plan", "plan": {"action": "power.discover.sites", "expected_effect": f"Map {len(sites)} sites for power analysis"}}
+            return {"status": "ok", "power_map": power_map}
+            
+        elif target_type == "device":
+            if not site_id:
+                raise ValueError("site_id required for device power mapping")
+            
+            devices = self.inventory_list("device", active_only=False, options={"site_id": site_id})
+            power_map = {
+                "action": "power.map.devices", 
+                "site_id": site_id,
+                "devices": [],
+                "summary": {"total_devices": len(devices), "poe_capable_devices": 0}
+            }
+            
+            for device in devices:
+                device_id = device.get("external_id") or device.get("id")
+                device_detail = self._request("GET", f"/sites/{site_id}/devices/{device_id}")
+                
+                interfaces = device_detail.get("interfaces", {})
+                ports = interfaces.get("ports", [])
+                poe_ports = [p for p in ports if "poe" in p]
+                
+                device_info = {
+                    "device_id": device_id,
+                    "name": device.get("name"),
+                    "model": device_detail.get("model"),
+                    "state": device_detail.get("state"),
+                    "total_ports": len(ports),
+                    "poe_ports_count": len(poe_ports),
+                    "poe_capable": len(poe_ports) > 0,
+                    "power_priority": "high" if device_detail.get("model", "").lower().find("gateway") >= 0 else "medium"
+                }
+                power_map["devices"].append(device_info)
+                if device_info["poe_capable"]:
+                    power_map["summary"]["poe_capable_devices"] += 1
+            
+            if dry_run:
+                return {"status": "plan", "plan": {"action": "power.discover.devices", "expected_effect": f"Map {len(devices)} devices for power analysis"}}
+            return {"status": "ok", "power_map": power_map}
+            
+        elif target_type == "port":
+            if not site_id:
+                raise ValueError("site_id required for port power mapping")
+                
+            ports = self.inventory_list("port", active_only=False, options={"site_id": site_id})
+            poe_ports = [p for p in ports if p.get("attrs", {}).get("poe_capable", False)]
+            
+            power_map = {
+                "action": "power.map.ports",
+                "site_id": site_id, 
+                "poe_ports": [],
+                "summary": {
+                    "total_ports": len(ports),
+                    "poe_capable_ports": len(poe_ports),
+                    "poe_enabled_ports": len([p for p in poe_ports if p.get("attrs", {}).get("poe_enabled", False)])
+                }
+            }
+            
+            for port in poe_ports:
+                attrs = port.get("attrs", {})
+                port_info = {
+                    "port_id": port.get("external_id"),
+                    "name": port.get("name"),
+                    "device_id": attrs.get("device_id"),
+                    "device_name": attrs.get("device_name"),
+                    "port_idx": attrs.get("port_idx"),
+                    "poe_enabled": attrs.get("poe_enabled", False),
+                    "poe_standard": attrs.get("poe_standard"),
+                    "poe_type": attrs.get("poe_type"),
+                    "poe_state": attrs.get("poe_state"),
+                    "state": attrs.get("state"),
+                    "power_priority": "low"  # Default to low priority for power management
+                }
+                power_map["poe_ports"].append(port_info)
+            
+            if dry_run:
+                return {"status": "plan", "plan": {"action": "power.discover.ports", "expected_effect": f"Map {len(poe_ports)} PoE ports for power management"}}
+            return {"status": "ok", "power_map": power_map}
+        
+        else:
+            raise ValueError(f"unsupported target_type for power discovery: {target_type}")

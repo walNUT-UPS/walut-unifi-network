@@ -35,7 +35,7 @@ test:
 capabilities:
   - id: inventory.list
     verbs: [list]
-    targets: [site, device, client, voucher]
+    targets: [site, device, port]
     dry_run: optional
     idempotency:
       key_fields: ["verb", "target_type", "options.active_only", "params.filter"]
@@ -47,47 +47,23 @@ capabilities:
     idempotency:
       key_fields: ["verb"]
 
-  - id: unifi.device.lifecycle
+  - id: unifi.device.power
     verbs: [restart]
     targets: [device]
     dry_run: required
     idempotency:
       key_fields: ["verb", "target_id"]
 
-  - id: unifi.port.lifecycle
+  - id: unifi.port.power
     verbs: [power-cycle]
     targets: [port]
     dry_run: required
     idempotency:
       key_fields: ["verb", "target_id", "params.port_idx"]
 
-  - id: unifi.client.access
-    verbs: [authorize-guest, unauthorize-guest]
-    targets: [client]
-    dry_run: required
-    invertible:
-      authorize-guest: { inverse: "unauthorize-guest" }
-      unauthorize-guest: { inverse: "authorize-guest" }
+  - id: unifi.power.discover
+    verbs: [map]
+    targets: [site, device, port]
+    dry_run: optional
     idempotency:
-      key_fields:
-        - "verb"
-        - "target_id"
-        - "params.time_limit_minutes"
-        - "params.data_usage_limit_mbytes"
-        - "params.rx_rate_limit_kbps"
-        - "params.tx_rate_limit_kbps"
-
-  - id: unifi.voucher.lifecycle
-    verbs: [generate, delete]
-    targets: [voucher]
-    dry_run: required
-    idempotency:
-      key_fields:
-        - "verb"
-        - "params.count"
-        - "params.name"
-        - "params.authorized_guest_limit"
-        - "params.time_limit_minutes"
-        - "params.data_usage_limit_mbytes"
-        - "params.rx_rate_limit_kbps"
-        - "params.tx_rate_limit_kbps"
+      key_fields: ["verb", "target_type", "options.site_id"]
