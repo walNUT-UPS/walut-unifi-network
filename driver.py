@@ -32,8 +32,9 @@ class UnifiNetworkDriver:
       - Vouchers: GET/POST/DELETE /v1/sites/{siteId}/hotspot/vouchers (+/{voucherId})
     """
 
-    def __init__(self, instance, secrets: dict | None = None):
+    def __init__(self, instance, secrets: dict | None = None, transports=None, **kwargs):
         # Framework interface: instance is IntegrationInstance object with config attribute
+        # Accept but ignore transports and other framework parameters
         secrets = secrets or {}
         config = instance.config if hasattr(instance, 'config') else instance
         
