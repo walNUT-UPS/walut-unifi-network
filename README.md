@@ -17,7 +17,7 @@ A comprehensive integration plugin for UniFi Network controllers, providing devi
 
 ```yaml
 connection:
-  hostname: "10.240.0.1"                    # Controller IP or FQDN
+  hostname: "10.0.0.1"                    # Controller IP or FQDN
   api_key: "your-integration-api-key"       # UniFi Integrations API Key
   verify_ssl: true                          # SSL certificate verification
   base_path: "/proxy/network/integration/v1" # API base path
