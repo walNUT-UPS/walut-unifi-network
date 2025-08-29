@@ -3,3 +3,5 @@ gpt.md
 pycache/
 __pycache__/
 .claude
+secrets.yaml
+config.yaml
