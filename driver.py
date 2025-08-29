@@ -32,8 +32,11 @@ class UnifiNetworkDriver:
       - Vouchers: GET/POST/DELETE /v1/sites/{siteId}/hotspot/vouchers (+/{voucherId})
     """
 
-    def __init__(self, config: dict, secrets: dict | None = None):
+    def __init__(self, instance, secrets: dict | None = None):
+        # Framework interface: instance is IntegrationInstance object with config attribute
         secrets = secrets or {}
+        config = instance.config if hasattr(instance, 'config') else instance
+        
         self.cfg = _Cfg(
             hostname=config["hostname"],
             base_path=config.get("base_path", "/proxy/network/integration/v1"),
@@ -155,7 +158,7 @@ class UnifiNetworkDriver:
         """
         t0 = time.time()
         try:
-            info = self._request("GET", "/v1/info", expected=200)
+            info = self._request("GET", "/info", expected=200)
             latency = int((time.time() - t0) * 1000)
             version = info.get("applicationVersion")
             return {"status": "connected", "latency_ms": latency, "details": f"UniFi Network {version}"}
@@ -178,13 +181,13 @@ class UnifiNetworkDriver:
             params = {}
             if filter_expr:
                 params["filter"] = filter_expr
-            return self._paginate("/v1/sites", params=params, page_size=100, limit_upper=1000)
+            return self._paginate("/sites", params=params, page_size=100, limit_upper=1000)
 
         if target_type == "device":
             if not site_id:
                 raise ValueError("options.site_id is required for device listing")
             params = {}
-            return self._paginate(f"/v1/sites/{site_id}/devices", params=params, page_size=200, limit_upper=200)
+            return self._paginate(f"/sites/{site_id}/devices", params=params, page_size=200, limit_upper=200)
 
         if target_type == "client":
             if not site_id:
@@ -192,7 +195,7 @@ class UnifiNetworkDriver:
             params = {}
             if filter_expr:
                 params["filter"] = filter_expr  # supports eq/ne/gt/... per Filtering section
-            return self._paginate(f"/v1/sites/{site_id}/clients", params=params, page_size=200, limit_upper=200)
+            return self._paginate(f"/sites/{site_id}/clients", params=params, page_size=200, limit_upper=200)
 
         if target_type == "voucher":
             if not site_id:
@@ -200,7 +203,7 @@ class UnifiNetworkDriver:
             params = {"limit": 1000}
             if filter_expr:
                 params["filter"] = filter_expr  # supports eq, like, in, notIn etc.
-            return self._paginate(f"/v1/sites/{site_id}/hotspot/vouchers", params=params, page_size=1000, limit_upper=1000)
+            return self._paginate(f"/sites/{site_id}/hotspot/vouchers", params=params, page_size=1000, limit_upper=1000)
 
         raise ValueError(f"unsupported target_type: {target_type}")
 
@@ -209,7 +212,7 @@ class UnifiNetworkDriver:
     def unifi_application_info(self, verb: str, target: dict, dry_run: bool = False, **params) -> dict:
         if verb != "get":
             raise ValueError("unsupported verb for unifi.application.info")
-        info = self._request("GET", "/v1/info", expected=200)
+        info = self._request("GET", "/info", expected=200)
         return {"status": "ok", "info": info}
 
     # ---------- unifi.device.lifecycle ----------
@@ -231,7 +234,7 @@ class UnifiNetworkDriver:
             return {"status": "plan", "plan": plan}
 
         payload = {"action": "RESTART"}  # per PDF Devices → Execute Device Action
-        self._request("POST", f"/v1/sites/{site_id}/devices/{device_id}/actions", json=payload, expected=200)
+        self._request("POST", f"/sites/{site_id}/devices/{device_id}/actions", json=payload, expected=200)
         return {"status": "ok", "result": {"device_id": device_id, "action": "RESTART"}}
 
     # ---------- unifi.port.lifecycle ----------
@@ -256,7 +259,7 @@ class UnifiNetworkDriver:
             return {"status": "plan", "plan": plan}
 
         payload = {"action": "POWER_CYCLE"}  # per PDF Ports → Execute Port Action
-        self._request("POST", f"/v1/sites/{site_id}/devices/{device_id}/interfaces/ports/{port_idx}/actions",
+        self._request("POST", f"/sites/{site_id}/devices/{device_id}/interfaces/ports/{port_idx}/actions",
                       json=payload, expected=200)
         return {"status": "ok", "result": {"device_id": device_id, "port_idx": port_idx, "action": "POWER_CYCLE"}}
 
@@ -301,7 +304,7 @@ class UnifiNetworkDriver:
         if dry_run:
             return {"status": "plan", "plan": plan}
 
-        res = self._request("POST", f"/v1/sites/{site_id}/clients/{client_id}/actions", json=payload, expected=200)
+        res = self._request("POST", f"/sites/{site_id}/clients/{client_id}/actions", json=payload, expected=200)
         return {"status": "ok", "result": res or {"client_id": client_id, "action": payload["action"]}}
 
     # ---------- unifi.voucher.lifecycle ----------
@@ -340,7 +343,7 @@ class UnifiNetworkDriver:
             if dry_run:
                 return {"status": "plan", "plan": plan}
 
-            res = self._request("POST", f"/v1/sites/{site_id}/hotspot/vouchers", json=payload, expected=201)
+            res = self._request("POST", f"/sites/{site_id}/hotspot/vouchers", json=payload, expected=201)
             return {"status": "ok", "result": res}
 
         if verb == "delete":
@@ -354,7 +357,7 @@ class UnifiNetworkDriver:
                 }
                 if dry_run:
                     return {"status": "plan", "plan": plan}
-                res = self._request("DELETE", f"/v1/sites/{site_id}/hotspot/vouchers/{voucher_id}", expected=200)
+                res = self._request("DELETE", f"/sites/{site_id}/hotspot/vouchers/{voucher_id}", expected=200)
                 return {"status": "ok", "result": res}
             if not filter_expr:
                 raise ValueError("either target.id or params.filter is required for delete")
@@ -366,7 +369,7 @@ class UnifiNetworkDriver:
             }
             if dry_run:
                 return {"status": "plan", "plan": plan}
-            res = self._request("DELETE", f"/v1/sites/{site_id}/hotspot/vouchers", params={"filter": filter_expr}, expected=200)
+            res = self._request("DELETE", f"/sites/{site_id}/hotspot/vouchers", params={"filter": filter_expr}, expected=200)
             return {"status": "ok", "result": res}
 
         raise ValueError("unsupported verb for unifi.voucher.lifecycle")
